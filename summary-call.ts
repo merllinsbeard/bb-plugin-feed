@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,12 @@ const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const CHATGPT_AUTH_CLAIM_PATH = "https://api.openai.com/auth";
 const RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+const ONE_LINE_SCHEMA = {
+  type: "object",
+  properties: { oneLine: { type: "string" } },
+  required: ["oneLine"],
+  additionalProperties: false,
+};
 
 type JsonObject = Record<string, unknown>;
 
@@ -177,13 +184,14 @@ async function readStreamText(response: Response): Promise<string> {
   return text;
 }
 
-/** One structured model call that returns `{ oneLine }`. */
-export async function requestOneLine(input: {
+export interface OneLineRequest {
   model: string;
   instructions: string;
   prompt: string;
   timeoutMs: number;
-}): Promise<string> {
+}
+
+async function requestCodexOneLine(input: OneLineRequest): Promise<string> {
   const credentials = await readCodexCredentials();
   const body = {
     model: input.model,
@@ -197,12 +205,7 @@ export async function requestOneLine(input: {
         type: "json_schema",
         name: "result",
         strict: true,
-        schema: {
-          type: "object",
-          properties: { oneLine: { type: "string" } },
-          required: ["oneLine"],
-          additionalProperties: false,
-        },
+        schema: ONE_LINE_SCHEMA,
       },
     },
   };
@@ -223,4 +226,108 @@ export async function requestOneLine(input: {
   const oneLine = nonEmptyString(value?.oneLine);
   if (oneLine === null) throw new Error("The model response has no oneLine.");
   return oneLine;
+}
+
+/** Runs the local `claude` CLI on the user's Claude login, with no tools, no project context, and no saved session. */
+async function requestClaudeOneLine(input: OneLineRequest): Promise<string> {
+  const args = [
+    "-p",
+    "--model", input.model,
+    "--system-prompt", input.instructions,
+    "--tools", "",
+    "--strict-mcp-config",
+    "--setting-sources", "",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--output-format", "json",
+    "--json-schema", JSON.stringify(ONE_LINE_SCHEMA),
+  ];
+  const { stdout, stderr, code } = await new Promise<{
+    stdout: string;
+    stderr: string;
+    code: number | null;
+  }>((resolve, reject) => {
+    // Run outside any project so no CLAUDE.md is loaded.
+    const child = spawn("claude", args, { cwd: os.tmpdir(), stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      settle();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error("The Claude Code call timed out."))),
+      input.timeoutMs,
+    );
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.length > RESPONSE_MAX_BYTES) {
+        finish(() => reject(new Error("The model response is too large.")));
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 4_000) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error: NodeJS.ErrnoException) =>
+      finish(() =>
+        reject(
+          new Error(
+            error.code === "ENOENT"
+              ? "The claude CLI is not on PATH. Install Claude Code and run claude login."
+              : `The claude CLI failed to start: ${error.message}`,
+          ),
+        ),
+      ),
+    );
+    child.on("close", (code) => finish(() => resolve({ stdout, stderr, code })));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input.prompt);
+  });
+  let value: JsonObject | null;
+  try {
+    value = asObject(JSON.parse(stdout));
+  } catch {
+    value = null;
+  }
+  if (value === null) {
+    throw new Error(
+      `The claude CLI returned no JSON (exit ${code}): ${(stderr || stdout).trim().slice(0, 400)}`,
+    );
+  }
+  const oneLine = nonEmptyString(asObject(value.structured_output)?.oneLine);
+  if (value.is_error === false && oneLine !== null) return oneLine;
+  const detail = nonEmptyString(value.result) ?? stderr.trim();
+  throw new Error(`The claude CLI call failed: ${detail.slice(0, 400) || "no oneLine in the response."}`);
+}
+
+export const SUMMARIZER_PROVIDERS = {
+  codex: { defaultModel: "gpt-6-luna", request: requestCodexOneLine },
+  "claude-code": { defaultModel: "claude-haiku-5-5", request: requestClaudeOneLine },
+} as const satisfies Record<
+  string,
+  { defaultModel: string; request: (input: OneLineRequest) => Promise<string> }
+>;
+
+export type SummarizerProviderId = keyof typeof SUMMARIZER_PROVIDERS;
+
+export const SUMMARIZER_PROVIDER_IDS = Object.keys(SUMMARIZER_PROVIDERS) as [
+  SummarizerProviderId,
+  ...SummarizerProviderId[],
+];
+
+export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProviderId = "codex";
+
+/** One structured model call that returns `{ oneLine }`; an empty model uses the provider's default. */
+export async function requestOneLine(
+  input: OneLineRequest & { provider: string },
+): Promise<string> {
+  if (!Object.hasOwn(SUMMARIZER_PROVIDERS, input.provider)) {
+    throw new Error(`Unknown summarizer provider: ${input.provider}.`);
+  }
+  const provider = SUMMARIZER_PROVIDERS[input.provider as SummarizerProviderId];
+  return provider.request({ ...input, model: input.model.trim() || provider.defaultModel });
 }

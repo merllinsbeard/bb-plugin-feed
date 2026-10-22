@@ -28,7 +28,7 @@
   "scripts": {
     "build": "bb plugin build",
     "test": "vitest run",
-    "test:backend": "vitest run projection.test.ts server.test.ts public-sdk-only.test.ts",
+    "test:backend": "vitest run projection.test.ts server.test.ts summary-call.test.ts public-sdk-only.test.ts",
     "test:frontend": "vitest run app.test.tsx",
     "typecheck": "tsc --noEmit"
   },

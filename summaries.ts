@@ -91,6 +91,7 @@ export class Summaries {
   constructor(
     private readonly bb: BbPluginApi,
     private readonly store: FeedStore,
+    private readonly provider: () => string,
     private readonly model: () => string,
     private readonly style: () => string | undefined,
   ) {}
@@ -121,6 +122,7 @@ export class Summaries {
     const startedAt = performance.now();
     try {
       const oneLine = await requestOneLine({
+        provider: this.provider(),
         model: this.model(),
         instructions: summaryInstructions(this.style()),
         prompt: await this.prompt(threadId, resultSeq, previousLine),
