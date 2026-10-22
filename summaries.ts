@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import { boundedErrorText } from "./backend-utils.js";
 import { boundedLine, ONE_LINE_MAX } from "./projection.js";
 import type { FeedStore } from "./store.js";
@@ -18,13 +19,43 @@ const FIXED_INSTRUCTIONS = [
   "Return JSON with the field oneLine.",
 ].join("\n");
 
+const CARD_INSTRUCTION =
+  "<thread_card> names the goal this thread works toward. Use it only to name the goal the turn moves. It is never a source of what was done; that comes from <agent_messages> alone.";
+
+const cardReader = z
+  .object({
+    v: z.literal(1),
+    task: z.string(),
+    project: z.string().optional(),
+    goals: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
+export type ThreadCard = Pick<z.infer<typeof cardReader>, "task" | "project" | "goals">;
+
+/** The Followups thread card, or null for a missing plugin, a failed read, or a shape this reader does not know. */
+export async function readThreadCard(
+  sdk: BbPluginApi["sdk"],
+  threadId: string,
+): Promise<ThreadCard | null> {
+  try {
+    const metadata = await sdk.threads.getPluginMetadata({ threadId, pluginId: "followups" });
+    const parsed = cardReader.safeParse((metadata as { card?: unknown } | null)?.card);
+    if (!parsed.success) return null;
+    const { task, project, goals } = parsed.data;
+    return { task, project, goals };
+  } catch {
+    return null;
+  }
+}
+
 /** The default of the summaryInstructions setting: who to speak to, what to put first, tone, and length. */
 export const DEFAULT_SUMMARY_STYLE =
   'Lead with the answer to the request, then what the user must do next, if anything. The reader is the user: call them "you", even when the transcript uses their name. Speak to them directly ("Done: …", "Yes — …"). One or two plain sentences, at most 180 characters. No Markdown, backticks, or file paths.';
 
 /** The fixed transcript framing, then the style; an empty style uses the default. */
-export function summaryInstructions(style: string | undefined): string {
-  return `${FIXED_INSTRUCTIONS}\n${style?.trim() || DEFAULT_SUMMARY_STYLE}`;
+export function summaryInstructions(style: string | undefined, hasCard = false): string {
+  return `${FIXED_INSTRUCTIONS}${hasCard ? `\n${CARD_INSTRUCTION}` : ""}\n${style?.trim() || DEFAULT_SUMMARY_STYLE}`;
 }
 
 type EventList = Awaited<
@@ -53,13 +84,25 @@ function tail(text: string, max: number): string {
   return text.length <= max ? text : `…${text.slice(text.length - max)}`;
 }
 
+function cardBlock(card: ThreadCard): string {
+  const lines = [
+    `Task: ${card.task}`,
+    ...(card.project ? [`Project: ${card.project}`] : []),
+    ...(card.goals?.length ? [`Goals: ${card.goals.join("; ")}`] : []),
+  ];
+  return `<thread_card>\n${lines.join("\n")}\n</thread_card>`;
+}
+
 /** R19: the turn-starting message, the agent's text messages in the turn, and the previous line. */
 export function summaryPrompt(input: {
   request: string | null;
   agentMessages: readonly string[];
   previousLine: string | null;
+  card?: ThreadCard | null;
 }): string {
+  const card = input.card;
   return [
+    ...(card ? [cardBlock(card)] : []),
     `<request>\n${input.request === null ? "(none)" : tail(input.request, USER_TEXT_MAX)}\n</request>`,
     `<agent_messages>\n${tail(input.agentMessages.join("\n\n"), AGENT_TEXT_MAX) || "(none)"}\n</agent_messages>`,
     `<previous_line>\n${input.previousLine ?? "(none)"}\n</previous_line>`,
@@ -121,11 +164,14 @@ export class Summaries {
   ): Promise<void> {
     const startedAt = performance.now();
     try {
+      const provider = this.provider();
+      // R10: card text goes only to Claude, never to OpenAI.
+      const card = provider === "claude-code" ? await readThreadCard(this.bb.sdk, threadId) : null;
       const oneLine = await requestOneLine({
-        provider: this.provider(),
+        provider,
         model: this.model(),
-        instructions: summaryInstructions(this.style()),
-        prompt: await this.prompt(threadId, resultSeq, previousLine),
+        instructions: summaryInstructions(this.style(), card !== null),
+        prompt: await this.prompt(threadId, resultSeq, previousLine, card),
         timeoutMs: CALL_TIMEOUT_MS,
       });
       // A newer result's call wins; this answer is dropped.
@@ -150,6 +196,7 @@ export class Summaries {
     threadId: string,
     resultSeq: number,
     previousLine: string | null,
+    card: ThreadCard | null,
   ): Promise<string> {
     const [userEvent] = await this.bb.sdk.threads.events.list({
       threadId,
@@ -173,6 +220,7 @@ export class Summaries {
         .filter((text): text is string => text !== null)
         .reverse(),
       previousLine,
+      card,
     });
   }
 }
