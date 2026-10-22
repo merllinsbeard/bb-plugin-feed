@@ -25,16 +25,21 @@ The plugin ID is `feed`.
 - `managerThreadId` (required): the ID of the one manager thread that owns the Feed. Inside the thread, run `bb status` or read `$BB_THREAD_ID`. In the `feed` skill, the agent sets this value itself.
 - `userManagedSectionId` (required): the sidebar section for threads you talk to yourself. Its rows show a filled star.
 - `childrenSectionId` (required): the sidebar section for threads the manager starts. It must differ from `userManagedSectionId`.
-- `summarizerModel`: the model for the summary call. Default: `gpt-6-luna`.
+- `summarizerProvider`: where the summary call runs, `codex` or `claude-code`. Default: `codex`.
+- `summarizerModel`: the model for the summary call. Empty uses the provider's default: `gpt-6-luna` for `codex`, `claude-haiku-5-5` for `claude-code`.
 - `summaryInstructions`: the style of the one-line summary: who to speak to, what to put first, tone, and length. Empty uses the default. The plugin always sends its fixed transcript framing first and cuts the line at 240 characters.
 
 To find a section ID, move any thread into the section and run `bb thread show <thread-id> --json`. The `sectionId` field holds the ID. A section ID does not change when you rename the section.
 
 If the plugin reports a missing setting, or a missing, archived, or deleted manager, correct the setting and run `bb plugin reload feed`. The plugin cannot clear its `needs-configuration` status without a reload.
 
-### Codex login for summaries
+### Logins for summaries
 
-The summary call uses the Codex login on the machine that runs the BB server. Run `codex login` there, with a ChatGPT account or an OpenAI API key. Without a login, the Feed still works: line 2 of each row shows the first sentence of the agent's latest message instead of a summary.
+With `summarizerProvider` set to `codex`, the summary call uses the Codex login on the machine that runs the BB server. Run `codex login` there, with a ChatGPT account or an OpenAI API key.
+
+With `claude-code`, the call runs the `claude` CLI found on the `PATH` of the BB server, with the login of the user who runs the server. Run `claude login` there. The CLI runs with no tools, no project instructions, and no saved session.
+
+Without a login, the Feed still works: line 2 of each row shows the first sentence of the agent's latest message instead of a summary.
 
 ## Feed rows
 

@@ -14,8 +14,7 @@ import {
 } from "./feed-service.js";
 import { FeedStore, readRetiredSummarizerId, SCHEMA_STATEMENTS } from "./store.js";
 import { DEFAULT_SUMMARY_STYLE, Summaries } from "./summaries.js";
-
-const DEFAULT_SUMMARIZER_MODEL = "gpt-6-luna";
+import { DEFAULT_SUMMARIZER_PROVIDER, SUMMARIZER_PROVIDER_IDS } from "./summary-call.js";
 
 const managerThreadIdSchema = z
   .string()
@@ -55,12 +54,19 @@ export default async function plugin(bb: BbPluginApi) {
       description:
         "Sidebar section for threads the manager starts. Its root threads show in the Feed.",
     },
+    summarizerProvider: {
+      type: "select",
+      label: "Summarizer provider",
+      description:
+        "Where the one-line summary call runs: codex uses the local Codex login, claude-code runs the local claude CLI.",
+      options: [...SUMMARIZER_PROVIDER_IDS],
+      default: DEFAULT_SUMMARIZER_PROVIDER,
+    },
     summarizerModel: {
       type: "string",
       label: "Summarizer model",
       description:
-        "Model for the one-line summary call, made with the local Codex login.",
-      default: DEFAULT_SUMMARIZER_MODEL,
+        "Model for the one-line summary call. Empty uses the provider's default: gpt-6-luna for codex, claude-haiku-5-5 for claude-code.",
     },
     summaryInstructions: {
       type: "string",
@@ -80,7 +86,8 @@ export default async function plugin(bb: BbPluginApi) {
   const summaries = new Summaries(
     bb,
     store,
-    () => currentSettings.summarizerModel?.trim() || DEFAULT_SUMMARIZER_MODEL,
+    () => currentSettings.summarizerProvider?.trim() || DEFAULT_SUMMARIZER_PROVIDER,
+    () => currentSettings.summarizerModel ?? "",
     () => currentSettings.summaryInstructions,
   );
   const service = new FeedService(bb, store, () => settings.get(), (threadId, seq) =>

@@ -30,6 +30,7 @@ export interface FeedSettings {
   managerThreadId: string | undefined;
   userManagedSectionId: string | undefined;
   childrenSectionId: string | undefined;
+  summarizerProvider: string | undefined;
   summarizerModel: string | undefined;
   summaryInstructions: string | undefined;
 }
@@ -66,7 +67,6 @@ export function configurationProblem(settings: FeedSettings): string | null {
     ["managerThreadId", "managerThreadId"],
     ["userManagedSectionId", "userManagedSectionId"],
     ["childrenSectionId", "childrenSectionId"],
-    ["summarizerModel", "summarizerModel"],
   ];
   const missing = required
     .filter(([key]) => !settings[key]?.trim())
